@@ -25,6 +25,46 @@
  * than to the address resulting from executing the current instruction. 
  */
 
+
+// Hack CPU（中央处理器），由一个 ALU 组成，
+// 两个名为 A 和 D 的寄存器，以及一个名为 PC 的程序计数器。
+// CPU 被设计用来获取并执行 Hack 机器语言编写的指令。
+// 特别是，函数如下：
+// 根据 Hack 机器语言规范执行输入的指令。
+// 语言规范中的 D 和 A 指的是 CPU 中的寄存器，而 M 指的是由 A 寻址的外部内存位置，即 Memory[A]。
+// inM 输入持有该位置的值。
+// 如果当前指令需要向 M 写入值，该值被放置在 outM 中，目标位置的地址被放置在 addressM 输出中，并且 writeM 控制位被置位。
+// (当 writeM 等于 0 时，outM 中可以出现任何值)。
+// outM 和 writeM 输出是组合逻辑：
+// 它们会立即受到当前指令执行的影响。
+// addressM 和 pc 输出是时钟控制的：尽管它们会受到当前指令执行的影响，但它们的新值只在下一个时间步才确定。
+// 如果 reset 等于 1，那么 CPU 会跳转到地址 0（即 pc 在下一个时间步被设置为 0），而不是跳转到执行当前指令后得到的地址。
+
+// 指令解码器 这只是简单的组合逻辑电路，用于检测指令总线上的位信号。
+// 通过检查指令的第15位，即可判断需执 行的指令类型：A指令（0）或C指令（1）。
+// 在第15位添加一个非门后，即可生成表示正在解码A指令的控制信号。
+// 当指令为C时，通过多路复用器的'a'位在ALU输入端选择A或M。这六个控制位可输入至ALU的控制位。
+// 关于3个目标位和跳转位的具体实现将在下文详述。 在后续电路中使用指令位之前，将其与第15位进行按位与运算是合理的。
+// 因此，当遇到A指令（第15位 =0）时，C指令解码器的所有输出均为零。
+// 以A指令为例，此时位0至14将根据A寄存器的值随机呈现0或1 。
+// 若这些位直接连接至算术逻辑单元（通过控制位），则会导致ALU执行随机运算。
+// A指令实现, 加载A寄存器有两种方式：一是通过A指令（例如@15）；二是将目标设为A寄存器（例如A = -1）。
+// 我们可以使用多路复用器选择输入来源（当目标为A时取自ALU输出，当为A指令时取自指令总线）。
+// 应使用指令中相关的目标位或（非）第15位来设置A寄存器的加载位。
+// 目标位指定: 
+// 算术逻辑单元输出连接至A寄存器输入端、D寄存器输入端及出M端（连接至RAM）。
+// 目标位控制算术逻辑单元（ALU）的输出方向。d1选择A寄存器，d2选择D寄存器，d3选择RAM。
+// 因此d1 和d2控制相关寄存器的加载位，而d3是CPU的"写入M"输出。
+// 跳转指令规范: 
+// 当发生跳转时，我们将存储在A寄存器中的值加载到程序计数器中。
+// 要检查是否发生跳转，需要验证C 指令中是否指定了跳转操作，以及相应条件是否满足。
+// 例如，JGT表示"大于零时跳转"。因此我们需要检查算术逻辑单元（ALU）的输出标志位。
+// 负数标志和零标 志已实现，可据此创建正数标志（若非负数且非零，则必然为正数）。
+// 若JGT位被置位（j3）且正向标志位被置位，则必须执行跳转操作并可加载程序计数器。
+// 可构建类似电路处 理负向和零向标志位，并将它们组合后输入至程序计数器的加载位。
+// CPU复位端直接连接至程序计数器复位端。
+// 程序计数器默认应置于递增模式（通过将相应输入置为真实现）。
+
 CHIP CPU {
 
     IN  inM[16],         // M value input  (M = contents of RAM[A])
@@ -34,10 +74,43 @@ CHIP CPU {
                          // the current program (reset==0).
 
     OUT outM[16],        // M value output
-        writeM,          // Write to M? 
+        writeM,          // Write to M?
         addressM[15],    // Address in data memory (of M)
         pc[15];          // address of next instruction
 
     PARTS:
-    // Put your code here:
+    // 指令解码器
+    // ALU 控制位 这六个控制位可输入至ALU的控制位
+    Not(in=instruction[15], out=isAInstruction);
+    Mux16(a=aluOut_A, b=instruction[0..15], sel=instruction[15], out=aRegisterInput);
+    ARegister(in=aRegisterInput, load=instruction[5], out=aRegisterOut);
+    // Mux16(a[0..15]=false, b=instruction[0..15], sel=instruction[15], out=aluControlBits);
+    And(a=instruction[15], b=instruction[11], out=aluControl_zx); // zero the x input?
+    And(a=instruction[15], b=instruction[10], out=aluControl_nx); // negate the x input?
+    And(a=instruction[15], b=instruction[9], out=aluControl_zy); // zero the y input?
+    And(a=instruction[15], b=instruction[8], out=aluControl_ny); // negate the y input?
+    And(a=instruction[15], b=instruction[7], out=aluControl_f);  // compute out = x + y (if 1) or x & y (if 0) function code (1 for add, 0 for and)
+    And(a=instruction[15], b=instruction[6], out=aluControl_no); // negate the output?
+
+    // ALU 输入 Mux, 通过多路复用器的'a'位在ALU输入端选择A或M
+    // Mux(a=instruction[0..14], b=inM, sel=instruction[12], out=aluInputA);
+
+    DRegister(in=aluOut_D, load=instruction[4], out=dRegisterOut);
+    Mux16(a=aRegisterOut, b=inM, sel=instruction[12], out=aluInputA);
+    ALU(x=dRegisterOut, y=aluInputA,
+        zx=aluControl_zx, nx=aluControl_nx,
+        zy=aluControl_zy, ny=aluControl_ny,
+        f=aluControl_f, no=aluControl_no,
+        out=aluOutput, zr=aluOutZr, ng=aluOutNg);
+    And(a=instruction[15], b=instruction[3], out=writeM); // write to M?
+    // 目标位控制算术逻辑单元（ALU）的输出方向
+    And(a=instruction[15], b=instruction[5], out=aluOutControl_A); // load A register
+    And(a=instruction[15], b=instruction[4], out=aluOutControl_D); // load D register
+    Mux16(a=aluOutput, b=aRegisterOut, sel=aluOutControl_A, out=aluOut_A); // load A register
+    Mux16(a=aluOutput, b=dRegisterOut, sel=aluOutControl_D, out=aluOut_D); // load D register
+    Mux16(a=aluOutput, b=aluOutput, sel=writeM, out=aluOut_M);
+
+
+
 }
+
