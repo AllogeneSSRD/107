@@ -22,10 +22,73 @@
  * Screen and Keyboard chip specifications given in the book.
  */
 
+// Hack 计算机内存的完整地址空间，包括 RAM 和内存映射 I/O。
+// 该芯片支持读写操作，如下所示：
+//     读：out(t) = Memory[address(t)](t)
+//     写：如果 load(t-1)，则 Memory[address(t-1)](t) = in(t-1)
+// 用文字来说：芯片始终输出由地址指定的内存位置中存储的值。
+// 如果 load 等于 1，输入值将被加载到由地址指定的内存位置。这个值从下一个时间步开始通过输出输出。
+// 地址空间规则：
+// 仅使用 Memory 芯片的上 16K+8K+1 个字。
+// 访问地址>0x6000 无效。
+// 访问 0x4000-0x5FFF 范围内的任何地址会导致访问屏幕内存映射。
+// 访问地址 0x6000 会导致访问键盘内存映射。这些地址的行为在书中给出的屏幕和键盘芯片规范中有描述。
+
+// This part represents the entire RAM address space and contains three parts: RAM16K, Screen and Keyboard.
+// You should use the built-in version of the RAM16K chip, rather than the one you built yourself,
+// as the built-in version provides a GUI that makes de-bugging easier.
+// 这部分代表了整个 RAM 地址空间，包含三个部分：RAM16K、屏幕和键盘。
+// 你应该使用内置的 RAM16K 芯片，而不是你自己构建的版本，因为内置版本提供了一个 GUI，使调试更加容易。
+
+// 根据地址，输入应该被加载到 RAM 或屏幕中。
+// 如果地址小于 16384，输入将加载到 RAM 中。
+// 如果地址大于 16383 且小于 24576，输入也将加载到 RAM 中。
+// 考虑地址的位 14 和位 13，它们的值分别为 16384 和 8192。
+// 有四种位组合，由此我们可以确定选择的是 RAM、屏幕还是键盘。
+//      00 - 地址必须小于 8192 – RAM
+//      01 - 地址必须小于 16384 – RAM
+//      10 – 地址必须大于或等于 16384 – 屏幕
+//      11 – 地址必须大于或等于 24576 - 键盘
+// 建议：使用 DMux4Way 和地址的位 13 和位 14 来选择是否加载 RAM 或屏幕（通过将‘true’传输到相应的加载位）。
+// 使用 Mux4Way 和地址的位 13 和位 14 来选择是否将 RAM、键盘或屏幕连接到输出。
+
+// 指令解码器 这只是一个简单的组合逻辑，用于检查指令总线上的位。
+// 你可以检查指令的第 15 位，以确定是要执行 A 指令（0）还是 C 指令（1）。
+// 在第 15 位添加一个非门，然后可以用来创建一个控制信号，表示正在解码 A 指令。
+// 当是 C 指令时，Mux 上的'a'位用于在 ALU 输入端选择 A 和 M。
+// 六个控制位可以馈送到 ALU 的控制位。3 位目标位和跳转位将在下文中讨论。
+// 在将指令位用于电路的其他部分之前，将每个指令位与第 15 位进行 AND 运算是有意义的。
+// 因此，当是 A 指令（第 15 位=0）时，C 指令解码器的所有输出都将为零。
+// 考虑一个 A 指令，那么位 0 到 14 都是随机的 0 或 1，具体取决于 A 中的值。
+// 如果这些位连接到 ALU（通过控制位），ALU 最终会执行随机操作。A 指令实现 有两种方法加载 A 寄存器。
+// 要么通过 A 指令（例如@15），要么通过目标为 A（例如 A=-1）。
+
 CHIP Memory {
     IN in[16], load, address[15];
     OUT out[16];
 
     PARTS:
     // Put your code here:
+    Not(in=address[14], out=notA14);
+    Not(in=address[13], out=notA13);
+
+    And(a=notA14, b=notA14, out=RAM);       // 00
+    // And(a=notA14, b=address[13], out=RAM);  // 01
+    And(a=address[14], b=notA13, out=Screen); // 10
+    And(a=address[14], b=address[13], out=Keyboard); // 11
+
+    // load
+    And(a=load, b=RAM, out=loadRAM);
+    And(a=load, b=Screen, out=loadScreen);
+    And(a=load, b=address[14], out=loadKeyboard);
+
+    // RAM16K
+    RAM16K(in=in, load=loadRAM, address=address[0..13], out=outRAM);
+    // Screen
+    Screen(in=in, load=loadScreen, address=address[0..12], out=outScreen);
+    // Keyboard
+    Keyboard(out=outKeyboard);
+
+    Mux4Way16(a=outRAM, b=outRAM, c=outScreen, d=outKeyboard, sel=address[13..14], out=out);
+    // Mux3Way16(a=outRAM, b=outScreen, c=outKeyboard, sel=address[13..14], out=out);
 }
