@@ -81,36 +81,55 @@ CHIP CPU {
     PARTS:
     // 指令解码器
     // ALU 控制位 这六个控制位可输入至ALU的控制位
+    // a
     Not(in=instruction[15], out=isAInstruction);
-    Mux16(a=aluOut_A, b=instruction[0..15], sel=instruction[15], out=aRegisterInput);
-    ARegister(in=aRegisterInput, load=instruction[5], out=aRegisterOut);
+    And(a=instruction[15], b=true, out=isCInstruction);
+    // A寄存器输入多路复用器
+    Mux16(a=instruction, b=aluOut, sel=isCInstruction, out=aRegisterInput);
+    ARegister(in=aRegisterInput, load=destA, out=aRegisterOut, out[0..14]=addressM);
     // Mux16(a[0..15]=false, b=instruction[0..15], sel=instruction[15], out=aluControlBits);
-    And(a=instruction[15], b=instruction[11], out=aluControl_zx); // zero the x input?
-    And(a=instruction[15], b=instruction[10], out=aluControl_nx); // negate the x input?
-    And(a=instruction[15], b=instruction[9], out=aluControl_zy); // zero the y input?
-    And(a=instruction[15], b=instruction[8], out=aluControl_ny); // negate the y input?
-    And(a=instruction[15], b=instruction[7], out=aluControl_f);  // compute out = x + y (if 1) or x & y (if 0) function code (1 for add, 0 for and)
-    And(a=instruction[15], b=instruction[6], out=aluControl_no); // negate the output?
+    //
+    // And(a=true, b=instruction[11], out=aluControl_zx); // zero the x input?
+    // And(a=true, b=instruction[10], out=aluControl_nx); // negate the x input?
+    // And(a=true, b=instruction[9], out=aluControl_zy); // zero the y input?
+    // And(a=true, b=instruction[8], out=aluControl_ny); // negate the y input?
+    // And(a=true, b=instruction[7], out=aluControl_f);  // compute out = x + y (if 1) or x & y (if 0) function code (1 for add, 0 for and)
+    // And(a=true, b=instruction[6], out=aluControl_no); // negate the output?
 
     // ALU 输入 Mux, 通过多路复用器的'a'位在ALU输入端选择A或M
     // Mux(a=instruction[0..14], b=inM, sel=instruction[12], out=aluInputA);
 
-    DRegister(in=aluOut_D, load=instruction[4], out=dRegisterOut);
+    DRegister(in=aluOut, load=destD, out=dRegisterOut);
     Mux16(a=aRegisterOut, b=inM, sel=instruction[12], out=aluInputA);
     ALU(x=dRegisterOut, y=aluInputA,
-        zx=aluControl_zx, nx=aluControl_nx,
-        zy=aluControl_zy, ny=aluControl_ny,
-        f=aluControl_f, no=aluControl_no,
-        out=aluOutput, zr=aluOutZr, ng=aluOutNg);
-    And(a=instruction[15], b=instruction[3], out=writeM); // write to M?
-    // 目标位控制算术逻辑单元（ALU）的输出方向
-    And(a=instruction[15], b=instruction[5], out=aluOutControl_A); // load A register
-    And(a=instruction[15], b=instruction[4], out=aluOutControl_D); // load D register
-    Mux16(a=aluOutput, b=aRegisterOut, sel=aluOutControl_A, out=aluOut_A); // load A register
-    Mux16(a=aluOutput, b=dRegisterOut, sel=aluOutControl_D, out=aluOut_D); // load D register
-    Mux16(a=aluOutput, b=aluOutput, sel=writeM, out=aluOut_M);
+        zx=instruction[11], nx=instruction[10],
+        zy=instruction[9], ny=instruction[8],
+        f=instruction[7], no=instruction[6],
+        out=aluOut, out=outM,
+        zr=aluOutZr, ng=aluOutNg);
+    // Destination Specification
+    And(a=isCInstruction, b=instruction[5], out=tempA);
+    Or(a=isAInstruction, b=tempA, out=destA);
+    And(a=isCInstruction, b=instruction[4], out=destD);
+    And(a=isCInstruction, b=instruction[3], out=writeM); // write to M?
 
+    // Jump Specification
+    // 跳转逻辑：根据 ALU 标志和指令的 j1,j2,j3 位决定是否加载 PC
+    // ALU 标志：zr（零）、ng（负数）
+    // 正数标志：notZR AND notNG
+    Not(in=aluOutZr, out=aluOutNotZr);
+    Not(in=aluOutNg, out=aluOutNotNg);
+    And(a=aluOutNotZr, b=aluOutNotNg, out=aluOutPos);
+    // 跳转条件
+    And(a=instruction[2], b=aluOutNg, out=JLT);       // Jump if less than
+    And(a=instruction[1], b=aluOutZr, out=JEQ);       // Jump if equal
+    And(a=instruction[0], b=aluOutPos, out=JGT);      // Jump if greater than
 
+    Or(a=JLT, b=JEQ, out=JLE);
+    Or(a=JLE, b=JGT, out=JMP);
+    And(a=JMP, b=instruction[15], out=destPC); // Load PC?
+    Not(in=destPC, out=notDestPC);
+
+    PC(in=aRegisterOut, load=destPC, inc=notDestPC, reset=reset, out[0..14]=pc);
 
 }
-
